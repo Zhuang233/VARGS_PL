@@ -1,0 +1,10 @@
+*.ply
+ShapeSplatsV1/
+__pycache__
+lightning_logs
+*.pth
+*.ckpt
+*/build
+*/chamfer.egg-info
+*.egg-info
+*.egg

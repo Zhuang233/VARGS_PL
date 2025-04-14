@@ -1,0 +1,67 @@
+data:
+  batch_size: 20
+  num_workers: 3
+  data_split_dir: dataset/ShapeSplatsV1_part20_split
+  train_split_file: train.txt
+  val_split_file: test.txt
+  test_split_file: test.txt
+  config_ShapeNetGaussian:
+    gs_path: dataset/ShapeSplatsV1_part20
+    # attribute: ["xyz", "opacity", "scale", "sh"]
+    # norm_attribute: ["xyz", "opacity", "scale", "sh"]
+    attribute: ["xyz"]
+    norm_attribute: ["xyz"]
+    sample_points_num: 4096
+  
+model:
+  class_path: models.dvae.DiscreteVAE
+  init_args:
+    config:
+      group_size: 32
+      num_group: 64
+      encoder_dims: 256
+      tokens_dims: 256
+      decoder_dims: 256
+      num_tokens: 8192
+      dvae_ckpt: "dVAE.pth"
+      # dvae_ckpt: "ckpt/dvae/ShapeNetGaussian/ShapeNetGaussian_256_256_256_8192_32_64_4096.pth"
+
+      lr: 0.00001
+      npoints: 4096
+      feature_num_per_point: 3
+      fourier_encode:
+        num_bands: 128
+
+trainer:
+  # strategy: ddp_find_unused_parameters_true
+  # profiler: "simple"
+  max_epochs: 100
+  log_every_n_steps: 3
+  # limit_train_batches: 10 # 限制单卡训练数，debug用
+  # limit_val_batches: 1 # 限制单卡训练数，debug用
+  # overfit_batches: 10 # 人为过拟合,等同于将 limit_train_batches 和 limit_val_batches 设置为相同的值，此外关闭dataloader的suffer
+  # fast_dev_run: 5 # 快速跑一遍代码，高效代码查错
+  # gradient_clip_val: 0.5 # 梯度裁剪，当训练时梯度爆炸使用
+  # gradient_clip_algorithm: 
+  # detect_anomaly: True # 检测自动求导引擎中的异常,会变慢
+  callbacks:
+  - class_path: callback.point_cloud_save.PointCloudSaver
+    init_args:
+      num_saves: 5
+
+  - class_path: callback.logger_txt.logger_txt_callback
+
+  - class_path: callback.debug.debugger
+
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      save_last: true       
+      save_top_k: 1
+      monitor: val_loss
+      mode: min
+
+  - class_path: lightning.pytorch.callbacks.ModelSummary
+    init_args:
+      max_depth: -1  # 设置为 -1 以显示所有子模块
+
+ckpt_path: last
