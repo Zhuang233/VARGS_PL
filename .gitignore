@@ -8,3 +8,4 @@ lightning_logs
 */chamfer.egg-info
 *.egg-info
 *.egg
+shapenetcoreV2/

@@ -102,7 +102,7 @@ class DGCNN(nn.Module):
 
         f = self.layer5(f)                           # B C' N
         
-        f = f.transpose(-1, -2)
+        f = f.transpose(-1, -2).contiguous()
 
         return f
 
@@ -136,7 +136,7 @@ def square_distance(src, dst):
     """
     B, N, _ = src.shape
     _, M, _ = dst.shape
-    dist = -2 * torch.matmul(src, dst.permute(0, 2, 1))
+    dist = -2 * torch.matmul(src, dst.permute(0, 2, 1).contiguous())
     dist += torch.sum(src ** 2, -1).view(B, N, 1)
     dist += torch.sum(dst ** 2, -1).view(B, 1, M)
     return dist    
@@ -214,7 +214,7 @@ class Encoder(nn.Module):
         bs, g, n , _ = point_groups.shape
         point_groups = point_groups.reshape(bs * g, n, 3)
         # encoder
-        feature = self.first_conv(point_groups.transpose(2,1))  # BG 256 n
+        feature = self.first_conv(point_groups.transpose(2,1).contiguous())  # BG 256 n
         feature_global = torch.max(feature,dim=2,keepdim=True)[0]  # BG 256 1
         feature = torch.cat([feature_global.expand(-1,-1,n), feature], dim=1)# BG 512 n
         feature = self.second_conv(feature) # BG 1024 n
@@ -264,7 +264,7 @@ class Decoder(nn.Module):
         coarse = self.mlp(feature_global).reshape(bs * g, self.num_coarse, 3) # BG M 3
 
         point_feat = coarse.unsqueeze(2).expand(-1, -1, self.grid_size**2, -1) # BG (M) S 3
-        point_feat = point_feat.reshape(bs * g, self.num_fine, 3).transpose(2, 1) # BG 3 N
+        point_feat = point_feat.reshape(bs * g, self.num_fine, 3).transpose(2, 1).contiguous() # BG 3 N
 
         seed = self.folding_seed.unsqueeze(2).expand(bs * g, -1, self.num_coarse, -1) # BG 2 M (S)
         seed = seed.reshape(bs * g, -1, self.num_fine).to(feature_global.device)  # BG 2 N
@@ -273,10 +273,10 @@ class Decoder(nn.Module):
         feat = torch.cat([feature_global, seed, point_feat], dim=1) # BG C N
     
         center = coarse.unsqueeze(2).expand(-1, -1, self.grid_size**2, -1) # BG (M) S 3
-        center = center.reshape(bs * g, self.num_fine, 3).transpose(2, 1) # BG 3 N
+        center = center.reshape(bs * g, self.num_fine, 3).transpose(2, 1).contiguous() # BG 3 N
 
         fine = self.final_conv(feat) + center   # BG 3 N
-        fine = fine.reshape(bs, g, 3, self.num_fine).transpose(-1, -2)
+        fine = fine.reshape(bs, g, 3, self.num_fine).transpose(-1, -2).contiguous()
         coarse = coarse.reshape(bs, g, self.num_coarse, 3)
         return coarse, fine
 

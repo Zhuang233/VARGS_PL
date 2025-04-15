@@ -2,20 +2,47 @@
 
 import torch
 import torch.nn as nn
+from lightning import LightningModule
+from omegaconf import OmegaConf
 
-from torch_cluster import fps
-
-from einops import rearrange, repeat
+from einops import repeat
 
 import math
 
-from .utils import PreNorm, Attention, FeedForward, subsample
-from .utils import PointEmbed
+from utils.utils_vecset import PreNorm, Attention, FeedForward, subsample
+from utils.utils_vecset import PointEmbed
 from .bottleneck import Bottleneck, KLBottleneck, NormalizedBottleneck
 
-class VecSetAutoEncoder(nn.Module):
+def calc_iou(output, labels, threshold):
+    target = torch.zeros_like(labels)
+    target[labels>=threshold] = 1
+    
+    pred = torch.zeros_like(output)
+    pred[output>=threshold] = 1
+
+    accuracy = (pred==target).float().sum(dim=1) / target.shape[1]
+    accuracy = accuracy.mean()
+    intersection = (pred * target).sum(dim=1)
+    union = (pred + target).gt(0).sum(dim=1) + 1e-5
+    iou = intersection * 1.0 / union
+    iou = iou.mean()
+    return iou
+
+def points_gradient(inputs, outputs):
+    d_points = torch.ones_like(
+        outputs, requires_grad=False, device=outputs.device)
+    points_grad = torch.autograd.grad(
+        outputs=outputs,
+        inputs=inputs,
+        grad_outputs=d_points,
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True)[0]
+    return points_grad
+class VecSetAutoEncoder(LightningModule):
     def __init__(
         self,
+        config,
         *,
         depth=24,
         dim=768,
@@ -26,10 +53,9 @@ class VecSetAutoEncoder(nn.Module):
         dim_head=64,
         query_type='point',
         bottleneck=None,
-        bottleneck_args={},
     ):
         super().__init__()
-
+        self.config = OmegaConf.create(config)
         queries_dim = dim
         
         self.depth = depth
@@ -70,8 +96,7 @@ class VecSetAutoEncoder(nn.Module):
         nn.init.zeros_(self.to_outputs[1].weight)
         nn.init.zeros_(self.to_outputs[1].bias)
         
-        self.bottleneck = bottleneck(**bottleneck_args)
-
+        self.bottleneck = bottleneck
 
     def encode(self, pc):
         B, N, _ = pc.shape
@@ -129,59 +154,49 @@ class VecSetAutoEncoder(nn.Module):
 
         return {'o': o, **bottleneck}
 
-def create_autoencoder(depth=24, dim=512, M=512, N=2048, query_type='point', bottleneck=None, bottleneck_args={}):
-    model = VecSetAutoEncoder(
-        depth=depth, dim=dim, output_dim=1, num_inputs=N, 
-        num_latents=M, query_type=query_type, 
-        bottleneck=bottleneck, 
-        bottleneck_args=bottleneck_args,
-    )
-    return model
+    def training_step(self, batch, batch_idx):
+        points, labels, surface, num_vol, num_near= batch
+        num_vol,num_near = num_vol[0], num_near[0]
+        points = points.requires_grad_(True)
+        points_all = torch.cat([points, surface], dim=1)
+        outputs = self(surface, points_all)
+        output = outputs['o']
+        grad = points_gradient(points_all, output)
 
-def learnable_vec1024x16_dim1024_depth24_nb(pc_size=8192):
-    return create_autoencoder(
-        depth=24, dim=1024, M=1024,
-        N=pc_size, query_type='learnable', 
-        bottleneck=NormalizedBottleneck, 
-        bottleneck_args={'dim': 1024, 'latent_dim': 16},
-    )
+        loss_eikonal = (grad[:, :].norm(2, dim=-1) - 1).pow(2).mean()
+        criterion = torch.nn.L1Loss()
+        # criterion = torch.nn.BCEWithLogitsLoss()
 
-def learnable_vec1024x32_dim1024_depth24_nb(pc_size=8192):
-    return create_autoencoder(
-        depth=24, dim=1024, M=1024,
-        N=pc_size, query_type='learnable', 
-        bottleneck=NormalizedBottleneck, 
-        bottleneck_args={'dim': 1024, 'latent_dim': 32},
-    )
-    
-def point_vec1024x16_dim1024_depth24_nb(pc_size=8192):
-    return create_autoencoder(
-        depth=24, dim=1024, M=1024,
-        N=pc_size, query_type='point', 
-        bottleneck=NormalizedBottleneck, 
-        bottleneck_args={'dim': 1024, 'latent_dim': 16},
-    )
+        loss_vol = criterion(output[:, :num_vol], labels[:, :num_vol])
+        loss_near = criterion(output[:, num_vol:num_vol+num_near], labels[:, num_vol:num_vol+num_near])
+        loss_surface = (output[:, num_vol+num_near:]).abs().mean()
+        loss = loss_vol + 10 * loss_near + 0.001 * loss_eikonal + 1 * loss_surface# + 0.01 * loss_surface_normal
+        loss_value = loss.item()
+        self.log("train_loss", loss_value, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        threshold = 0
+        vol_iou = calc_iou(output[:, :1024], labels[:, :1024], threshold)
+        near_iou = calc_iou(output[:, 1024:2048], labels[:, 1024:2048], threshold)
+        return loss
 
-def point_vec1024x32_dim1024_depth24_nb(pc_size=8192):
-    return create_autoencoder(
-        depth=24, dim=1024, M=1024,
-        N=pc_size, query_type='point', 
-        bottleneck=NormalizedBottleneck, 
-        bottleneck_args={'dim': 1024, 'latent_dim': 32},
-    )
+    def validation_step(self, batch, batch_idx):
+        points, labels, surface, num_vol, num_near= batch
+        num_vol,num_near = num_vol[0], num_near[0]
+        with torch.enable_grad():
+            points = points.requires_grad_(True)
+            points_all = torch.cat([points, surface], dim=1)
+            outputs = self(surface, points_all)
+            output = outputs['o']
+            grad = points_gradient(points_all, output)
+
+        loss_eikonal = (grad[:, :].norm(2, dim=-1) - 1).pow(2).mean()
+        criterion = torch.nn.L1Loss()
+        # criterion = torch.nn.BCEWithLogitsLoss()
+        loss_near = criterion(output[:, :num_near], labels[:, :num_near])
+        loss_surface = (output[:, num_near:]).abs().mean()
+        loss = 10 * loss_near + 0.001 * loss_eikonal + 1 * loss_surface# + 0.01 * loss_surface_normal
+        self.log("test_loss", loss, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
     
-def learnable_vec1024_dim1024_depth24(pc_size=8192):
-    return create_autoencoder(
-        depth=24, dim=1024, M=1024,
-        N=pc_size, query_type='learnable', 
-        bottleneck=Bottleneck, 
-        bottleneck_args={},
-    )
-    
-def point_vec1024_dim1024_depth24(pc_size=8192):
-    return create_autoencoder(
-        depth=24, dim=1024, M=1024,
-        N=pc_size, query_type='point', 
-        bottleneck=Bottleneck, 
-        bottleneck_args={},
-    )
+    def test_step(self, batch, batch_idx):
+        pass
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=self.config["lr"])

@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 
-from .utils import DiagonalGaussianDistribution
+from utils.utils_vecset import DiagonalGaussianDistribution
 
 class Bottleneck(nn.Module):
     def __init__(self):

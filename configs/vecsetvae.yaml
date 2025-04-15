@@ -1,0 +1,77 @@
+data:
+  class_path: dataset.ShapeNetsetvecDataModule.ShapeNetsetvecDataModule
+  init_args:
+    batch_size: 4
+    num_workers: 3
+    transform: null
+    sdf_sampling: True
+    sdf_size: 1024
+    surface_sampling: True
+    surface_size: 4096
+    return_sdf: True
+
+
+  
+model:
+  class_path: models.vecsetvae.VecSetAutoEncoder
+  init_args:
+    config:
+      lr: 0.00001
+      npoints: 4096
+      feature_num_per_point: 3
+      fourier_encode:
+        num_bands: 128
+    depth: 12
+    dim: 256
+    num_latents: 1024
+    # learnablequery = num_latents * dim
+    num_inputs: 4096
+    dim_head: 64
+    query_type: 'learnable'
+    bottleneck:
+      class_path: models.bottleneck.NormalizedBottleneck
+      init_args:
+        dim: 256
+        latent_dim: 32
+
+
+trainer:
+  # logger:
+  #   class_path: lightning.pytorch.loggers.TensorBoardLogger
+  #   init_args:
+  #     save_dir: lightning_logs
+  # strategy: ddp_find_unused_parameters_true
+  # profiler: "simple"
+  max_epochs: 100
+  log_every_n_steps: 3
+  # limit_train_batches: 10 # 限制单卡训练数，debug用
+  # limit_val_batches: 1 # 限制单卡训练数，debug用
+  # overfit_batches: 10 # 人为过拟合,等同于将 limit_train_batches 和 limit_val_batches 设置为相同的值，此外关闭dataloader的suffer
+  # fast_dev_run: 5 # 快速跑一遍代码，高效代码查错
+  # gradient_clip_val: 0.5 # 梯度裁剪，当训练时梯度爆炸使用
+  # gradient_clip_algorithm: 
+  # detect_anomaly: True # 检测自动求导引擎中的异常,会变慢
+  callbacks:
+  # - class_path: callback.point_cloud_save.PointCloudSaver
+  #   init_args:
+  #     num_saves: 5
+
+  - class_path: callback.logger_txt.logger_txt_callback
+
+  - class_path: callback.debug.debugger
+
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      save_last: true       
+      save_top_k: 1
+      monitor: test_loss
+      mode: min
+
+  - class_path: lightning.pytorch.callbacks.ModelSummary
+    init_args:
+      max_depth: -1  # 设置为 -1 以显示所有子模块
+
+  # - class_path: lightning.pytorch.callbacks.DeviceStatsMonitor
+    
+
+ckpt_path: last

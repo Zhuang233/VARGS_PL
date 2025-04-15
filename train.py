@@ -1,10 +1,9 @@
-from dataset.ShapeNetGSDataModule import ShapeNetGSDataModule
 from lightning.pytorch.cli import LightningCLI
 
 def main():
     cli = LightningCLI(
         subclass_mode_model=True,
-        datamodule_class=ShapeNetGSDataModule,
+        subclass_mode_data=True,
     )
 
     # cli.datamodule.setup("fit")
@@ -12,7 +11,6 @@ def main():
     # for batch in cli.datamodule.train_dataloader():
     #     print("Data sample:", batch)
     #     break
-
 
 if __name__ == "__main__":
     main()

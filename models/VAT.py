@@ -197,7 +197,7 @@ class TriPlaneFeatureExtractor:
 
         # 将三个平面的特征相加
         out_feature = (xy_features + xz_features + yz_features).squeeze(-1)  # (bs, c, num)
-        return out_feature.permute(0, 2, 1)  # 调整为 (bs, num, c)
+        return out_feature.permute(0, 2, 1).contiguous()  # 调整为 (bs, num, c)
 
     @staticmethod
     def _normalize_grid(coord1, coord2):
