@@ -1,13 +1,13 @@
 data:
   class_path: dataset.ShapeNetsetvecDataModule.ShapeNetsetvecDataModule
   init_args:
-    batch_size: 4
+    batch_size: 3
     num_workers: 3
     transform: null
     sdf_sampling: True
     sdf_size: 1024
     surface_sampling: True
-    surface_size: 4096
+    surface_size: 2048
     return_sdf: True
 
 
@@ -16,38 +16,53 @@ model:
   class_path: models.vecsetvae.VecSetAutoEncoder
   init_args:
     config:
-      lr: 0.00001
+      lr: 0.0001
       npoints: 4096
       feature_num_per_point: 3
       fourier_encode:
         num_bands: 128
-    depth: 12
+    depth: 24
     dim: 256
     num_latents: 1024
     # learnablequery = num_latents * dim
-    num_inputs: 4096
+    num_inputs: 2048
     dim_head: 64
     query_type: 'learnable'
     bottleneck:
       class_path: models.bottleneck.NormalizedBottleneck
       init_args:
         dim: 256
-        latent_dim: 32
+        latent_dim: 256
 
+lr_scheduler:
+  class_path: torch.optim.lr_scheduler.StepLR
+  init_args:
+    step_size: 3000
+    gamma: 0.1
+  # interval: epoch
+  # frequency: 1
 
 trainer:
+  # profiler:
+  #   class_path: lightning.pytorch.profilers.AdvancedProfiler
+  #   init_args:
+  #     dirpath: ./logs
+  #     filename: perf_logs.txt
+  #     line_count_restriction: 1.0
+  #     dump_stats: true
   # logger:
   #   class_path: lightning.pytorch.loggers.TensorBoardLogger
   #   init_args:
   #     save_dir: lightning_logs
   # strategy: ddp_find_unused_parameters_true
   # profiler: "simple"
-  max_epochs: 100
+  max_epochs: 20000
   log_every_n_steps: 3
-  # limit_train_batches: 10 # 限制单卡训练数，debug用
+  check_val_every_n_epoch: 1
+  # limit_train_batches: 1 # 限制单卡训练数，debug用
   # limit_val_batches: 1 # 限制单卡训练数，debug用
-  # overfit_batches: 10 # 人为过拟合,等同于将 limit_train_batches 和 limit_val_batches 设置为相同的值，此外关闭dataloader的suffer
-  # fast_dev_run: 5 # 快速跑一遍代码，高效代码查错
+  # overfit_batches: 1 # 人为过拟合,等同于将 limit_train_batches 和 limit_val_batches 设置为相同的值，此外关闭dataloader的suffer
+  fast_dev_run: 3 # 快速跑一遍代码，高效代码查错
   # gradient_clip_val: 0.5 # 梯度裁剪，当训练时梯度爆炸使用
   # gradient_clip_algorithm: 
   # detect_anomaly: True # 检测自动求导引擎中的异常,会变慢
@@ -62,16 +77,18 @@ trainer:
 
   - class_path: lightning.pytorch.callbacks.ModelCheckpoint
     init_args:
+      # dirpath: "/home/zbw/VARGS_PL/lightning_logs/version_156/checkpoints"
       save_last: true       
       save_top_k: 1
-      monitor: test_loss
+      monitor: train_loss
       mode: min
 
   - class_path: lightning.pytorch.callbacks.ModelSummary
-    init_args:
-      max_depth: -1  # 设置为 -1 以显示所有子模块
+    # init_args:
+      # max_depth: -1  # 设置为 -1 以显示所有子模块
+
 
   # - class_path: lightning.pytorch.callbacks.DeviceStatsMonitor
     
 
-ckpt_path: last
+# ckpt_path: "/home/zbw/VARGS_PL/lightning_logs/version_156/checkpoints/last.ckpt"

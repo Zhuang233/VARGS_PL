@@ -5,6 +5,7 @@ import torch
 from torch.utils import data
 
 import numpy as np
+from pathlib import Path
 
 import csv
 
@@ -28,6 +29,7 @@ class shapenet(data.Dataset):
         self.transform = transform
         self.sdf_sampling = sdf_sampling
         self.sdf_size = sdf_size
+        print('sdf_size', self.sdf_size)
         self.split = split
 
         self.surface_sampling = surface_sampling
@@ -124,49 +126,51 @@ class shapenet(data.Dataset):
             surface, points = self.transform(surface, points)
 
         ## random rotation
-        if self.split == 'train':
-            perm = torch.randperm(3)
-            points = points[:, perm]
-            surface = surface[:, perm]
+        # if self.split == 'train':
+        #     perm = torch.randperm(3)
+        #     points = points[:, perm]
+        #     surface = surface[:, perm]
 
-            negative = torch.randint(2, size=(3,)) * 2 - 1
-            points *= negative[None]
-            surface *= negative[None]
+        #     negative = torch.randint(2, size=(3,)) * 2 - 1
+        #     points *= negative[None]
+        #     surface *= negative[None]
 
-            roll = torch.randn(1)
-            yaw = torch.randn(1)
-            pitch = torch.randn(1)
+        #     roll = torch.randn(1)
+        #     yaw = torch.randn(1)
+        #     pitch = torch.randn(1)
 
-            tensor_0 = torch.zeros(1)
-            tensor_1 = torch.ones(1)
+        #     tensor_0 = torch.zeros(1)
+        #     tensor_1 = torch.ones(1)
 
-            RX = torch.stack([
-                            torch.stack([tensor_1, tensor_0, tensor_0]),
-                            torch.stack([tensor_0, torch.cos(roll), -torch.sin(roll)]),
-                            torch.stack([tensor_0, torch.sin(roll), torch.cos(roll)])]).reshape(3,3)
+        #     RX = torch.stack([
+        #                     torch.stack([tensor_1, tensor_0, tensor_0]),
+        #                     torch.stack([tensor_0, torch.cos(roll), -torch.sin(roll)]),
+        #                     torch.stack([tensor_0, torch.sin(roll), torch.cos(roll)])]).reshape(3,3).contiguous()
 
-            RY = torch.stack([
-                            torch.stack([torch.cos(pitch), tensor_0, torch.sin(pitch)]),
-                            torch.stack([tensor_0, tensor_1, tensor_0]),
-                            torch.stack([-torch.sin(pitch), tensor_0, torch.cos(pitch)])]).reshape(3,3)
+        #     RY = torch.stack([
+        #                     torch.stack([torch.cos(pitch), tensor_0, torch.sin(pitch)]),
+        #                     torch.stack([tensor_0, tensor_1, tensor_0]),
+        #                     torch.stack([-torch.sin(pitch), tensor_0, torch.cos(pitch)])]).reshape(3,3).contiguous()
 
-            RZ = torch.stack([
-                            torch.stack([torch.cos(yaw), -torch.sin(yaw), tensor_0]),
-                            torch.stack([torch.sin(yaw), torch.cos(yaw), tensor_0]),
-                            torch.stack([tensor_0, tensor_0, tensor_1])]).reshape(3,3)
+        #     RZ = torch.stack([
+        #                     torch.stack([torch.cos(yaw), -torch.sin(yaw), tensor_0]),
+        #                     torch.stack([torch.sin(yaw), torch.cos(yaw), tensor_0]),
+        #                     torch.stack([tensor_0, tensor_0, tensor_1])]).reshape(3,3).contiguous()
 
-            R = torch.mm(RZ, RY)
-            R = torch.mm(R, RX)
+        #     R = torch.mm(RZ, RY)
+        #     R = torch.mm(R, RX)
 
-            points = torch.mm(points, R).detach()
-            surface = torch.mm(surface, R).detach()
+        #     points = torch.mm(points, R).detach()
+        #     surface = torch.mm(surface, R).detach()
               
         if self.return_sdf is False: # return occupancies (sign) instead
             sdf = (sdf<0).float()
 
+        
+        path = Path(npz_path)
+        path = path.parts[:]
 
-
-        return points, sdf, surface, num_vol, num_near
+        return points, sdf, surface, num_vol, num_near, path
 
     def __len__(self):
         return len(self.models)

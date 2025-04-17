@@ -8,6 +8,10 @@ from omegaconf import OmegaConf
 from einops import repeat
 
 import math
+import numpy as np
+# import mcubes
+from torchmcubes import marching_cubes
+import trimesh
 
 from utils.utils_vecset import PreNorm, Attention, FeedForward, subsample
 from utils.utils_vecset import PointEmbed
@@ -39,6 +43,19 @@ def points_gradient(inputs, outputs):
         retain_graph=True,
         only_inputs=True)[0]
     return points_grad
+class TransposedLinear(nn.Module):
+    def __init__(self, in_features, out_features):
+        super().__init__()
+        # 用正常的 row-major layout 定义
+        self.weight = nn.Parameter(torch.empty(in_features, out_features))  # [256, 1]
+        self.bias = nn.Parameter(torch.zeros(out_features))
+
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+
+    def forward(self, x):
+        return torch.matmul(x, self.weight) + self.bias  # x: [B, N, 256] @ [256, 1] => [B, N, 1]
+
+
 class VecSetAutoEncoder(LightningModule):
     def __init__(
         self,
@@ -88,15 +105,22 @@ class VecSetAutoEncoder(LightningModule):
 
         self.decoder_cross_attn = PreNorm(queries_dim, Attention(queries_dim, dim, heads = dim // dim_head, dim_head = dim_head))
 
+        # self.to_outputs = nn.Sequential(
+        #     nn.LayerNorm(queries_dim),
+        #     nn.Linear(queries_dim, output_dim)
+        # )
         self.to_outputs = nn.Sequential(
             nn.LayerNorm(queries_dim),
-            nn.Linear(queries_dim, output_dim)
+            TransposedLinear(queries_dim, output_dim)
         )
         
         nn.init.zeros_(self.to_outputs[1].weight)
         nn.init.zeros_(self.to_outputs[1].bias)
         
         self.bottleneck = bottleneck
+
+        
+
 
     def encode(self, pc):
         B, N, _ = pc.shape
@@ -155,7 +179,7 @@ class VecSetAutoEncoder(LightningModule):
         return {'o': o, **bottleneck}
 
     def training_step(self, batch, batch_idx):
-        points, labels, surface, num_vol, num_near= batch
+        points, labels, surface, num_vol, num_near, path = batch
         num_vol,num_near = num_vol[0], num_near[0]
         points = points.requires_grad_(True)
         points_all = torch.cat([points, surface], dim=1)
@@ -173,30 +197,81 @@ class VecSetAutoEncoder(LightningModule):
         loss = loss_vol + 10 * loss_near + 0.001 * loss_eikonal + 1 * loss_surface# + 0.01 * loss_surface_normal
         loss_value = loss.item()
         self.log("train_loss", loss_value, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        self.log("loss_vol", loss_vol, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        self.log("loss_near", loss_near, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        self.log("loss_eikonal", loss_eikonal, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        self.log("loss_surface", loss_surface, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        
         threshold = 0
         vol_iou = calc_iou(output[:, :1024], labels[:, :1024], threshold)
         near_iou = calc_iou(output[:, 1024:2048], labels[:, 1024:2048], threshold)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        points, labels, surface, num_vol, num_near= batch
-        num_vol,num_near = num_vol[0], num_near[0]
-        with torch.enable_grad():
-            points = points.requires_grad_(True)
-            points_all = torch.cat([points, surface], dim=1)
-            outputs = self(surface, points_all)
-            output = outputs['o']
-            grad = points_gradient(points_all, output)
+        # pass
+        points, labels, surface, num_vol, num_near, path = batch
+        density = 256
+        gap = 2. / density
+        x = np.linspace(-1, 1, density+1)
+        y = np.linspace(-1, 1, density+1)
+        z = np.linspace(-1, 1, density+1)
+        xv, yv, zv = np.meshgrid(x, y, z)
+        grid = torch.from_numpy(np.stack([xv, yv, zv]).astype(
+            np.float32)).view(3, -1).transpose(0, 1)[None].cuda()
+        
+        outputs = self(surface[0].unsqueeze(0), grid)
+        output = outputs['o']
 
-        loss_eikonal = (grad[:, :].norm(2, dim=-1) - 1).pow(2).mean()
-        criterion = torch.nn.L1Loss()
-        # criterion = torch.nn.BCEWithLogitsLoss()
-        loss_near = criterion(output[:, :num_near], labels[:, :num_near])
-        loss_surface = (output[:, num_near:]).abs().mean()
-        loss = 10 * loss_near + 0.001 * loss_eikonal + 1 * loss_surface# + 0.01 * loss_surface_normal
-        self.log("test_loss", loss, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        volume = output.view(density+1, density+1, density+1).permute(1, 0, 2) * (-1)
+
+        verts, faces = marching_cubes(volume.contiguous(), 0)
+        verts *= gap
+        verts -= 1.
+        verts = verts.cpu()
+        faces = faces.cpu()
+        m = trimesh.Trimesh(verts, faces)
+
+        m.export(f'{path[-2][0]}_{self.current_epoch}.ply')
+        # num_vol,num_near = num_vol[0], num_near[0]
+        # with torch.enable_grad():
+        #     points = points.requires_grad_(True)
+        #     points_all = torch.cat([points, surface], dim=1)
+        #     outputs = self(surface, points_all)
+        #     output = outputs['o'].contiguous()
+        #     grad = points_gradient(points_all, output)
+
+        # loss_eikonal = (grad[:, :].norm(2, dim=-1) - 1).pow(2).mean()
+        # criterion = torch.nn.L1Loss()
+        # # criterion = torch.nn.BCEWithLogitsLoss()
+        # loss_near = criterion(output[:, :num_near], labels[:, :num_near])
+        # loss_surface = (output[:, num_near:]).abs().mean()
+        # loss = 10 * loss_near + 0.001 * loss_eikonal + 1 * loss_surface# + 0.01 * loss_surface_normal
+        # self.log("test_loss", loss, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
     
     def test_step(self, batch, batch_idx):
-        pass
+        points, labels, surface, num_vol, num_near, path= batch
+        density = 256
+        gap = 2. / density
+        x = np.linspace(-1, 1, density+1)
+        y = np.linspace(-1, 1, density+1)
+        z = np.linspace(-1, 1, density+1)
+        xv, yv, zv = np.meshgrid(x, y, z)
+        grid = torch.from_numpy(np.stack([xv, yv, zv]).astype(
+            np.float32)).view(3, -1).transpose(0, 1)[None].cuda()
+        
+        outputs = self(surface[0].unsqueeze(0), grid)
+        output = outputs['o']
+
+        volume = output.view(density+1, density+1, density+1).permute(1, 0, 2) * (-1)
+
+        verts, faces = marching_cubes(volume, 0)
+        verts *= gap
+        verts -= 1.
+        verts = verts.cpu()
+        faces = faces.cpu()
+        m = trimesh.Trimesh(verts, faces)
+
+        m.export(f'output_{path[-2][0]}.ply')
+
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.config["lr"])
