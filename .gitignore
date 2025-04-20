@@ -9,3 +9,6 @@ lightning_logs
 *.egg-info
 *.egg
 shapenetcoreV2/
+ckpts/
+none_logs/
+dataset/ShapeSplatsV1_chair/

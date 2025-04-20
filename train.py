@@ -1,8 +1,10 @@
 from lightning.pytorch.cli import LightningCLI
+from models.diffgs.diffgsvae import DiffGSAutoEncoder
 
 def main():
     cli = LightningCLI(
-        subclass_mode_model=True,
+        # subclass_mode_model=True,
+        DiffGSAutoEncoder,
         subclass_mode_data=True,
     )
 

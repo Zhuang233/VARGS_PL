@@ -194,7 +194,16 @@ class ShapeNetGaussian(data.Dataset):
         scale_c = torch.from_numpy(scale_c).float()
         scale_m = torch.tensor(scale_m).float()
 
-        return sample["taxonomy_id"], sample["model_id"], data, centroid, scale_factor, scale_c, scale_m
+        # diffgs
+        occ_file_path = os.path.join(self.gs_path, "occ",sample["taxonomy_id"]+"-"+sample["model_id"]+"_occ.npy")
+        occ = np.load(occ_file_path)
+
+        occ_indices = np.random.choice(occ.shape[0], 80000, replace=False)
+        occ = occ[occ_indices, :]
+        occ_xyz = torch.from_numpy(occ[:,:3]).float()
+        occ = torch.from_numpy(occ[:,3:]).float()
+
+        return sample["taxonomy_id"], sample["model_id"], data, centroid, scale_factor, scale_c, scale_m, occ, occ_xyz
 
     def __len__(self):
         return len(self.file_list)

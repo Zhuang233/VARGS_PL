@@ -1,0 +1,97 @@
+data:
+  class_path: dataset.ShapeNetGSDataModule.ShapeNetGSDataModule
+  init_args:
+    batch_size: 3
+    num_workers: 3
+    data_split_dir: dataset/ShapeSplatsV1_chair/split
+    train_split_file: train.txt
+    val_split_file: test.txt
+    test_split_file: test.txt
+    config_ShapeNetGaussian:
+      gs_path: dataset/ShapeSplatsV1_chair
+      attribute: ["xyz", "opacity", "scale", "sh"]
+      norm_attribute: ["xyz", "opacity", "scale", "sh"]
+      sample_points_num: 4096
+
+
+  
+model:
+  # class_path: models.diffgs.diffgsvae.DiffGSAutoEncoder
+  # init_args:
+  config:
+    lr: 0.0001
+    GSModel:
+      latent_dim: 256
+      hidden_dim: 512
+      pn_hidden_dim: 128
+      num_layers: 9
+      skip_connection: True
+      tanh_act: False
+      pn_hidden_dim: 256
+    num_epochs: 100001
+    log_freq: 150
+    kld_weight: 1e-5
+    latent_std: 0.25
+
+    sdf_lr: 1e-4
+
+
+
+lr_scheduler:
+  class_path: torch.optim.lr_scheduler.StepLR
+  init_args:
+    step_size: 3000
+    gamma: 0.1
+  # interval: epoch
+  # frequency: 1
+
+trainer:
+  # profiler:
+  #   class_path: lightning.pytorch.profilers.AdvancedProfiler
+  #   init_args:
+  #     dirpath: ./logs
+  #     filename: perf_logs.txt
+  #     line_count_restriction: 1.0
+  #     dump_stats: true
+  # logger:
+  #   class_path: lightning.pytorch.loggers.TensorBoardLogger
+  #   init_args:
+  #     save_dir: lightning_logs
+  # strategy: ddp_find_unused_parameters_true
+  # profiler: "simple"
+  max_epochs: 20000
+  log_every_n_steps: 3
+  check_val_every_n_epoch: 1
+  # limit_train_batches: 1 # 限制单卡训练数，debug用
+  # limit_val_batches: 1 # 限制单卡训练数，debug用
+  # overfit_batches: 1 # 人为过拟合,等同于将 limit_train_batches 和 limit_val_batches 设置为相同的值，此外关闭dataloader的suffer
+  fast_dev_run: 3 # 快速跑一遍代码，高效代码查错
+  # gradient_clip_val: 0.5 # 梯度裁剪，当训练时梯度爆炸使用
+  # gradient_clip_algorithm: 
+  # detect_anomaly: True # 检测自动求导引擎中的异常,会变慢
+  callbacks:
+  # - class_path: callback.point_cloud_save.PointCloudSaver
+  #   init_args:
+  #     num_saves: 5
+
+  - class_path: callback.logger_txt.logger_txt_callback
+
+  - class_path: callback.debug.debugger
+
+  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+    init_args:
+      # dirpath: "/home/zbw/VARGS_PL/lightning_logs/version_156/checkpoints"
+      save_last: true       
+      save_top_k: 1
+      monitor: train_loss
+      mode: min
+
+  - class_path: lightning.pytorch.callbacks.ModelSummary
+    # init_args:
+      # max_depth: -1  # 设置为 -1 以显示所有子模块
+
+
+  # - class_path: lightning.pytorch.callbacks.DeviceStatsMonitor
+    
+
+# ckpt_path: "/home/zbw/VARGS_PL/lightning_logs/version_156/checkpoints/last.ckpt"
