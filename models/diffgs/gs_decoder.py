@@ -72,7 +72,7 @@ class ColorLayer(nn.Module):
 
     def __init__(self, hidden_dim=512):
         super().__init__()
-        self.feature_channels = {"shs": 48}
+        self.feature_channels = {"shs": 3}
         self.clip_scaling = 0.2
         self.init_scaling = -5.0
         self.init_density = 0.1

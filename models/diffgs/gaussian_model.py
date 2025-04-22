@@ -32,7 +32,7 @@ class GsModel(pl.LightningModule):
         self.tanh_act = model_config.tanh_act # False
         self.pn_hidden = model_config.pn_hidden_dim # self.latent_dim
 
-        self.pointnet = ConvPointnet(c_dim=self.latent_dim, dim=7, hidden_dim=self.pn_hidden, plane_resolution=64)
+        self.pointnet = ConvPointnet(c_dim=self.latent_dim, dim=14, hidden_dim=self.pn_hidden, plane_resolution=64)
         
         self.model = GSDecoder(latent_size=self.latent_dim, hidden_dim=self.hidden_dim, skip_connection=self.skip_connection, tanh_act=self.tanh_act)
 

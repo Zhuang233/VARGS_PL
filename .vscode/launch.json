@@ -11,6 +11,17 @@
                 "fit",
                 "--config", "./configs/vecsetvae.yaml",
             ]
+        },
+        {
+            "name": "diffgs",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/train.py",
+            "console": "integratedTerminal",
+            "args": [
+                "fit",
+                "--config", "./configs/diffgsvae.yaml",
+            ]
         }
     ]
 }

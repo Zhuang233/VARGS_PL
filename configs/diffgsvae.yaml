@@ -9,8 +9,8 @@ data:
     test_split_file: test.txt
     config_ShapeNetGaussian:
       gs_path: dataset/ShapeSplatsV1_chair
-      attribute: ["xyz", "opacity", "scale", "sh"]
-      norm_attribute: ["xyz", "opacity", "scale", "sh"]
+      attribute: ["xyz", "opacity", "scale", "rotation","sh"]
+      norm_attribute: ["xyz", "opacity", "scale","rotation", "sh"]
       sample_points_num: 4096
 
 
@@ -53,10 +53,11 @@ trainer:
   #     filename: perf_logs.txt
   #     line_count_restriction: 1.0
   #     dump_stats: true
-  # logger:
-  #   class_path: lightning.pytorch.loggers.TensorBoardLogger
-  #   init_args:
-  #     save_dir: lightning_logs
+  logger:
+    class_path: lightning.pytorch.loggers.TensorBoardLogger
+    init_args:
+      log_graph: True
+      save_dir: test
   # strategy: ddp_find_unused_parameters_true
   # profiler: "simple"
   max_epochs: 20000
@@ -64,8 +65,8 @@ trainer:
   check_val_every_n_epoch: 1
   # limit_train_batches: 1 # 限制单卡训练数，debug用
   # limit_val_batches: 1 # 限制单卡训练数，debug用
-  # overfit_batches: 1 # 人为过拟合,等同于将 limit_train_batches 和 limit_val_batches 设置为相同的值，此外关闭dataloader的suffer
-  fast_dev_run: 3 # 快速跑一遍代码，高效代码查错
+  overfit_batches: 1 # 人为过拟合,等同于将 limit_train_batches 和 limit_val_batches 设置为相同的值，此外关闭dataloader的suffer
+  # fast_dev_run: 3 # 快速跑一遍代码，高效代码查错
   # gradient_clip_val: 0.5 # 梯度裁剪，当训练时梯度爆炸使用
   # gradient_clip_algorithm: 
   # detect_anomaly: True # 检测自动求导引擎中的异常,会变慢
@@ -83,7 +84,7 @@ trainer:
       # dirpath: "/home/zbw/VARGS_PL/lightning_logs/version_156/checkpoints"
       save_last: true       
       save_top_k: 1
-      monitor: train_loss
+      monitor: loss
       mode: min
 
   - class_path: lightning.pytorch.callbacks.ModelSummary
