@@ -16,6 +16,25 @@ import trimesh
 from utils.utils_vecset import PreNorm, Attention, FeedForward, subsample
 from utils.utils_vecset import PointEmbed
 from .bottleneck import Bottleneck, KLBottleneck, NormalizedBottleneck
+from torch.autograd import Function
+from torch.cuda.amp import custom_bwd, custom_fwd
+
+class _TruncExp(Function):  # pylint: disable=abstract-method
+    # Implementation from torch-ngp:
+    # https://github.com/ashawkey/torch-ngp/blob/93b08a0d4ec1cc6e69d85df7f0acdfb99603b628/activation.py
+    @staticmethod
+    @custom_fwd(cast_inputs=torch.float32)
+    def forward(ctx, x):  # pylint: disable=arguments-differ
+        ctx.save_for_backward(x)
+        return torch.exp(x)
+
+    @staticmethod
+    @custom_bwd
+    def backward(ctx, g):  # pylint: disable=arguments-differ
+        x = ctx.saved_tensors[0]
+        return g * torch.exp(torch.clamp(x, max=15))
+inverse_sigmoid = lambda x: np.log(x / (1 - x))
+trunc_exp = _TruncExp.apply
 
 def calc_iou(output, labels, threshold):
     target = torch.zeros_like(labels)
@@ -55,6 +74,203 @@ class TransposedLinear(nn.Module):
     def forward(self, x):
         return torch.matmul(x, self.weight) + self.bias  # x: [B, N, 256] @ [256, 1] => [B, N, 1]
 
+class ColorLayer(nn.Module):
+
+    def __init__(self, hidden_dim=512):
+        super().__init__()
+        self.feature_channels = {"shs": 3}
+        self.clip_scaling = 0.2
+        self.init_scaling = -5.0
+        self.init_density = 0.1
+
+        self.out_layers = nn.ModuleList()
+        for key, out_ch in self.feature_channels.items():
+            layer = nn.Linear(hidden_dim, out_ch)
+            
+            # initialize
+            if key == "scaling":
+                nn.init.constant_(layer.bias, self.init_scaling)
+            elif key == "rotation":
+                # nn.init.constant_(layer.bias, 0)
+                nn.init.constant_(layer.bias[0], 1.0)
+            elif key == "opacity":
+                nn.init.constant_(layer.bias, inverse_sigmoid(self.init_density))
+            else:
+                nn.init.constant_(layer.weight, 0)
+                nn.init.constant_(layer.bias, 0)
+
+            self.out_layers.append(layer)
+
+    def forward(self, x):
+        ret = {}
+        for k, layer in zip(self.feature_channels.keys(), self.out_layers):
+            v = layer(x)
+            if k == "rotation":
+                v = torch.nn.functional.normalize(v, dim=-1)
+            elif k == "scaling":
+                v = trunc_exp(v)
+                if self.clip_scaling is not None:
+                    v = torch.clamp(v, min=0, max=self.clip_scaling)
+            elif k == "opacity":
+                v = torch.sigmoid(v)
+            # elif k == "shs":
+            #     v = torch.reshape(v, (v.shape[0], -1, 3))
+            ret[k] = v
+        return ret
+
+class GSLayer(nn.Module):
+
+    def __init__(self, hidden_dim=512):
+        super().__init__()
+        self.feature_channels = {"scaling": 3, "rotation": 4}
+        self.clip_scaling = 0.2
+        self.init_scaling = -5.0
+        self.init_density = 0.1
+
+        self.out_layers = nn.ModuleList()
+        for key, out_ch in self.feature_channels.items():
+            layer = nn.Linear(hidden_dim, out_ch)
+            
+            # initialize
+            if key == "scaling":
+                nn.init.constant_(layer.bias, self.init_scaling)
+            elif key == "rotation":
+                # nn.init.constant_(layer.bias, 0)
+                nn.init.constant_(layer.bias[0], 1.0)
+            else:
+                nn.init.constant_(layer.weight, 0)
+                nn.init.constant_(layer.bias, 0)
+
+            self.out_layers.append(layer)
+
+    def forward(self, x):
+        ret = {}
+        for k, layer in zip(self.feature_channels.keys(), self.out_layers):
+            v = layer(x)
+            if k == "rotation":
+                v = torch.nn.functional.normalize(v, dim=-1)
+            elif k == "scaling":
+                v = trunc_exp(v)
+                if self.clip_scaling is not None:
+                    v = torch.clamp(v, min=0, max=self.clip_scaling)
+            # elif k == "shs":
+            #     v = torch.reshape(v, (v.shape[0], -1, 3))
+            ret[k] = v
+        return ret
+class ColorDecoder(nn.Module):
+    def __init__(self, latent_size=256, hidden_dim=512,
+                 skip_connection=True, tanh_act=False,
+                 geo_init=True, input_size=None
+                 ):
+        super().__init__()
+        self.latent_size = latent_size
+        self.input_size = latent_size
+        self.skip_connection = skip_connection
+        self.tanh_act = tanh_act
+
+        skip_dim = hidden_dim+self.input_size if skip_connection else hidden_dim 
+
+        self.block1 = nn.Sequential(
+            nn.Linear(self.input_size, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+        )
+
+        self.block2 = nn.Sequential(
+            nn.Linear(skip_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+        )
+        
+        self.color_layer = ColorLayer(hidden_dim=hidden_dim)
+
+
+    def forward(self, x):
+        '''
+        x: concatenated xyz and shape features, shape: B, N, D+3 
+        '''        
+        block1_out = self.block1(x)
+
+        # skip connection, concat 
+        if self.skip_connection:
+            block2_in = torch.cat([x, block1_out], dim=-1) 
+        else:
+            block2_in = block1_out
+
+        block2_out = self.block2(block2_in)
+
+        out_ret = self.color_layer(block2_out)
+
+        out = out_ret['shs']
+        return out
+
+class GSDecoder(nn.Module):
+    def __init__(self, latent_size=256, hidden_dim=512,
+                 skip_connection=True, tanh_act=False,
+                 geo_init=True, input_size=None
+                 ):
+        super().__init__()
+        self.latent_size = latent_size
+        self.input_size = latent_size
+        self.skip_connection = skip_connection
+        self.tanh_act = tanh_act
+
+        skip_dim = hidden_dim+self.input_size if skip_connection else hidden_dim 
+
+        self.block1 = nn.Sequential(
+            nn.Linear(self.input_size, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+        )
+
+        self.block2 = nn.Sequential(
+            nn.Linear(skip_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+        )
+        
+        self.gs_layer = GSLayer(hidden_dim=hidden_dim)
+
+
+    def forward(self, x):
+        '''
+        x: concatenated xyz and shape features, shape: B, N, D+3 
+        '''        
+        block1_out = self.block1(x)
+
+        # skip connection, concat 
+        if self.skip_connection:
+            block2_in = torch.cat([x, block1_out], dim=-1) 
+        else:
+            block2_in = block1_out
+
+        block2_out = self.block2(block2_in)
+
+        out_ret = self.gs_layer(block2_out)
+
+        # out = torch.cat((out_ret['scaling'], out_ret['rotation']) , -1)
+
+        return out_ret
 
 class VecSetAutoEncoder(LightningModule):
     def __init__(
@@ -109,16 +325,17 @@ class VecSetAutoEncoder(LightningModule):
         #     nn.LayerNorm(queries_dim),
         #     nn.Linear(queries_dim, output_dim)
         # )
-        self.to_outputs = nn.Sequential(
-            nn.LayerNorm(queries_dim),
-            TransposedLinear(queries_dim, output_dim)
-        )
+        # self.to_outputs = nn.Sequential(
+        #     nn.LayerNorm(queries_dim),
+        #     TransposedLinear(queries_dim, output_dim)
+        # )
         
-        nn.init.zeros_(self.to_outputs[1].weight)
-        nn.init.zeros_(self.to_outputs[1].bias)
+        # nn.init.zeros_(self.to_outputs[1].weight)
+        # nn.init.zeros_(self.to_outputs[1].bias)
         
         self.bottleneck = bottleneck
-
+        self.colordecoder = ColorDecoder(latent_size=dim, hidden_dim=512) 
+        self.gsdecoder = GSDecoder(latent_size=dim, hidden_dim=512)
         
 
 
@@ -159,8 +376,11 @@ class VecSetAutoEncoder(LightningModule):
         
         queries_embeddings = self.point_embed(queries)
         latents = self.decoder_cross_attn(queries_embeddings, context = x)
+        scaling = self.gsdecoder(latents)["scaling"]
+        rotation = self.gsdecoder(latents)["rotation"]
+        shs = self.colordecoder(latents)
         
-        return self.to_outputs(latents)
+        return {"scaling": scaling,"rotation": rotation,"shs": shs}
 
     def forward(self, pc, queries):
         bottleneck = self.encode(pc)
@@ -174,64 +394,74 @@ class VecSetAutoEncoder(LightningModule):
                 os.append(o)
             o = torch.cat(os, dim=1)
         else:
-            o = self.decode(x, queries).squeeze(-1)
+            o = self.decode(x, queries)
 
-        return {'o': o, **bottleneck}
+        return o
 
     def training_step(self, batch, batch_idx):
-        points, labels, surface, num_vol, num_near, path = batch
-        num_vol,num_near = num_vol[0], num_near[0]
-        points = points.requires_grad_(True)
-        points_all = torch.cat([points, surface], dim=1)
-        outputs = self(surface, points_all)
-        output = outputs['o']
-        grad = points_gradient(points_all, output)
+        taxonomy_id, model_id, gs, centroid, scale_factor, scale_c, scale_m = batch
+        xyz = gs[...,:3]
+        queries = xyz.clone().requires_grad_(True)
+        outputs = self(xyz, queries)
+        grad = points_gradient(queries, torch.cat((outputs['scaling'], outputs['rotation'], outputs["shs"]) , -1))
 
         loss_eikonal = (grad[:, :].norm(2, dim=-1) - 1).pow(2).mean()
         criterion = torch.nn.L1Loss()
+        loss_scaling = criterion(outputs["scaling"], gs[...,4:7])
+        loss_rotation = criterion(outputs["rotation"], gs[...,7:11])
+        loss_shs = criterion(outputs["shs"], gs[...,11:14])
+        
+        loss = loss_shs  + loss_scaling + loss_rotation + 0.001 * loss_eikonal
+
+        self.log("train_loss", loss, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        self.log("loss_shs", loss_shs, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        self.log("loss_scaling", loss_scaling, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        self.log("loss_rotation", loss_rotation, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        self.log("loss_eikonal", loss_eikonal, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+
         # criterion = torch.nn.BCEWithLogitsLoss()
 
-        loss_vol = criterion(output[:, :num_vol], labels[:, :num_vol])
-        loss_near = criterion(output[:, num_vol:num_vol+num_near], labels[:, num_vol:num_vol+num_near])
-        loss_surface = (output[:, num_vol+num_near:]).abs().mean()
-        loss = loss_vol + 10 * loss_near + 0.001 * loss_eikonal + 1 * loss_surface# + 0.01 * loss_surface_normal
-        loss_value = loss.item()
-        self.log("train_loss", loss_value, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
-        self.log("loss_vol", loss_vol, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
-        self.log("loss_near", loss_near, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
-        self.log("loss_eikonal", loss_eikonal, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
-        self.log("loss_surface", loss_surface, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        # loss_vol = criterion(output[:, :num_vol], labels[:, :num_vol])
+        # loss_near = criterion(output[:, num_vol:num_vol+num_near], labels[:, num_vol:num_vol+num_near])
+        # loss_surface = (output[:, num_vol+num_near:]).abs().mean()
+        # loss = loss_vol + 10 * loss_near + 0.001 * loss_eikonal + 1 * loss_surface# + 0.01 * loss_surface_normal
+        # loss_value = loss.item()
+        # self.log("train_loss", loss_value, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        # self.log("loss_vol", loss_vol, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        # self.log("loss_near", loss_near, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        # self.log("loss_eikonal", loss_eikonal, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
+        # self.log("loss_surface", loss_surface, on_step=True, on_epoch=True, sync_dist=True, prog_bar=True, logger=True)
         
-        threshold = 0
-        vol_iou = calc_iou(output[:, :1024], labels[:, :1024], threshold)
-        near_iou = calc_iou(output[:, 1024:2048], labels[:, 1024:2048], threshold)
+        # threshold = 0
+        # vol_iou = calc_iou(output[:, :1024], labels[:, :1024], threshold)
+        # near_iou = calc_iou(output[:, 1024:2048], labels[:, 1024:2048], threshold)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        # pass
-        points, labels, surface, num_vol, num_near, path = batch
-        density = 256
-        gap = 2. / density
-        x = np.linspace(-1, 1, density+1)
-        y = np.linspace(-1, 1, density+1)
-        z = np.linspace(-1, 1, density+1)
-        xv, yv, zv = np.meshgrid(x, y, z)
-        grid = torch.from_numpy(np.stack([xv, yv, zv]).astype(
-            np.float32)).view(3, -1).transpose(0, 1)[None].cuda()
+        pass
+        # points, labels, surface, num_vol, num_near, path = batch
+        # density = 256
+        # gap = 2. / density
+        # x = np.linspace(-1, 1, density+1)
+        # y = np.linspace(-1, 1, density+1)
+        # z = np.linspace(-1, 1, density+1)
+        # xv, yv, zv = np.meshgrid(x, y, z)
+        # grid = torch.from_numpy(np.stack([xv, yv, zv]).astype(
+        #     np.float32)).view(3, -1).transpose(0, 1)[None].cuda()
         
-        outputs = self(surface[0].unsqueeze(0), grid)
-        output = outputs['o']
+        # outputs = self(surface[0].unsqueeze(0), grid)
+        # output = outputs['o']
 
-        volume = output.view(density+1, density+1, density+1).permute(1, 0, 2) * (-1)
+        # volume = output.view(density+1, density+1, density+1).permute(1, 0, 2) * (-1)
 
-        verts, faces = marching_cubes(volume.contiguous(), 0)
-        verts *= gap
-        verts -= 1.
-        verts = verts.cpu()
-        faces = faces.cpu()
-        m = trimesh.Trimesh(verts, faces)
+        # verts, faces = marching_cubes(volume.contiguous(), 0)
+        # verts *= gap
+        # verts -= 1.
+        # verts = verts.cpu()
+        # faces = faces.cpu()
+        # m = trimesh.Trimesh(verts, faces)
 
-        m.export(f'{path[-2][0]}_{self.current_epoch}.ply')
+        # m.export(f'{path[-2][0]}_{self.current_epoch}.ply')
         # num_vol,num_near = num_vol[0], num_near[0]
         # with torch.enable_grad():
         #     points = points.requires_grad_(True)

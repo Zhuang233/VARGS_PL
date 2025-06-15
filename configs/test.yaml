@@ -1,0 +1,14 @@
+data:
+  batch_size: 3
+  num_workers: 3
+  data_split_dir: dataset/ShapeSplatsV1_part20_split
+  train_split_file: train.txt
+  val_split_file: test.txt
+  test_split_file: test.txt
+  config_ShapeNetGaussian:
+    gs_path: dataset/ShapeSplatsV1_part20
+    # attribute: ["xyz", "opacity", "scale", "sh"]
+    # norm_attribute: ["xyz", "opacity", "scale", "sh"]
+    attribute: ["xyz", "opacity", "scale", "rotation","sh"]
+    norm_attribute: ["xyz", "opacity", "scale", "rotation","sh"]
+    sample_points_num: 2048

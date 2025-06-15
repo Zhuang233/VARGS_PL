@@ -68,6 +68,13 @@ if __name__ == "__main__":
 
     cli.datamodule.setup("fit")
 
+    from shapenet_gaussian import unnorm_gs
     for batch in cli.datamodule.train_dataloader():
-        print("Data sample:", batch)
+        # print("Data sample:", batch)
+        taxonomy_id, model_id, gs, centroid, scale_factor, scale_c, scale_m = batch
+        
+        ret = unnorm_gs(gs, centroid, scale_factor, scale_c, scale_m)
+
+        print(ret)
+        print(data_original)
         break

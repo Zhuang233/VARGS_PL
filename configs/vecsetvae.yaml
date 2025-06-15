@@ -1,15 +1,30 @@
+# data:
+#   class_path: dataset.ShapeNetsetvecDataModule.ShapeNetsetvecDataModule
+#   init_args:
+#     batch_size: 3
+#     num_workers: 3
+#     transform: null
+#     sdf_sampling: True
+#     sdf_size: 1024
+#     surface_sampling: True
+#     surface_size: 2048
+#     return_sdf: True
 data:
-  class_path: dataset.ShapeNetsetvecDataModule.ShapeNetsetvecDataModule
+  class_path: dataset.ShapeNetGSDataModule.ShapeNetGSDataModule
   init_args:
     batch_size: 3
     num_workers: 3
-    transform: null
-    sdf_sampling: True
-    sdf_size: 1024
-    surface_sampling: True
-    surface_size: 2048
-    return_sdf: True
-
+    data_split_dir: dataset/ShapeSplatsV1_part20_split
+    train_split_file: train.txt
+    val_split_file: test.txt
+    test_split_file: test.txt
+    config_ShapeNetGaussian:
+      gs_path: dataset/ShapeSplatsV1_part20
+      # attribute: ["xyz", "opacity", "scale", "sh"]
+      # norm_attribute: ["xyz", "opacity", "scale", "sh"]
+      attribute: ["xyz", "opacity", "scale", "rotation","sh"]
+      norm_attribute: ["xyz", "opacity", "scale", "rotation","sh"]
+      sample_points_num: 2048
 
   
 model:
@@ -43,6 +58,8 @@ lr_scheduler:
   # frequency: 1
 
 trainer:
+  accelerator: gpu
+  devices: 1
   # profiler:
   #   class_path: lightning.pytorch.profilers.AdvancedProfiler
   #   init_args:
@@ -61,8 +78,8 @@ trainer:
   check_val_every_n_epoch: 1
   # limit_train_batches: 1 # 限制单卡训练数，debug用
   # limit_val_batches: 1 # 限制单卡训练数，debug用
-  # overfit_batches: 1 # 人为过拟合,等同于将 limit_train_batches 和 limit_val_batches 设置为相同的值，此外关闭dataloader的suffer
-  fast_dev_run: 3 # 快速跑一遍代码，高效代码查错
+  overfit_batches: 1 # 人为过拟合,等同于将 limit_train_batches 和 limit_val_batches 设置为相同的值，此外关闭dataloader的suffer
+  # fast_dev_run: 3 # 快速跑一遍代码，高效代码查错
   # gradient_clip_val: 0.5 # 梯度裁剪，当训练时梯度爆炸使用
   # gradient_clip_algorithm: 
   # detect_anomaly: True # 检测自动求导引擎中的异常,会变慢
@@ -75,15 +92,15 @@ trainer:
 
   - class_path: callback.debug.debugger
 
-  - class_path: lightning.pytorch.callbacks.ModelCheckpoint
-    init_args:
-      # dirpath: "/home/zbw/VARGS_PL/lightning_logs/version_156/checkpoints"
-      save_last: true       
-      save_top_k: 1
-      monitor: train_loss
-      mode: min
+  # - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+  #   init_args:
+  #     # dirpath: "/home/zbw/VARGS_PL/lightning_logs/version_156/checkpoints"
+  #     save_last: true       
+  #     save_top_k: 1
+  #     monitor: train_loss
+  #     mode: min
 
-  - class_path: lightning.pytorch.callbacks.ModelSummary
+  # - class_path: lightning.pytorch.callbacks.ModelSummary
     # init_args:
       # max_depth: -1  # 设置为 -1 以显示所有子模块
 
